@@ -19,6 +19,7 @@ let isPositionPinned = false;
 let reviewList = [];
 let isReviewMode = false;
 let currentReviewIndex = -1;
+let currentFilteredIndex = -1;
 
 // DOM elements
 const openZipBtn = document.getElementById("openZipBtn");
@@ -59,6 +60,17 @@ const unmemorizedTotalText = document.getElementById("unmemorizedTotalText");
 const fsUnmemorizedCountText = document.getElementById("fsUnmemorizedCountText");
 const fsUnmemorizedTotalText = document.getElementById("fsUnmemorizedTotalText");
 
+const reviewLevelFilter = document.getElementById("reviewLevelFilter");
+const reviewLevelControl = document.getElementById("reviewLevelControl");
+const btnLevelDown = document.getElementById("btnLevelDown");
+const btnLevelUp = document.getElementById("btnLevelUp");
+const currentLevelInput = document.getElementById("currentLevelInput");
+
+const fsReviewLevelControl = document.getElementById("fsReviewLevelControl");
+const fsBtnLevelDown = document.getElementById("fsBtnLevelDown");
+const fsBtnLevelUp = document.getElementById("fsBtnLevelUp");
+const fsCurrentLevelInput = document.getElementById("fsCurrentLevelInput");
+
 
 // Event listeners
 openZipBtn.addEventListener("click", handleSelectZip);
@@ -86,6 +98,49 @@ if (fsToggleReviewBtn) fsToggleReviewBtn.addEventListener("click", (e) => {
   e.stopPropagation();
   toggleReviewQuestion();
 });
+
+if (reviewLevelFilter) reviewLevelFilter.addEventListener("change", () => {
+  currentFilteredIndex = -1; 
+  renderReviewList();
+});
+
+function adjustReviewLevel(amount) {
+  if (!currentData || !currentData[currentExamIndex]) return;
+  const exam = currentData[currentExamIndex];
+  const question = exam.questions[currentQuestionIndex];
+  
+  const existingIndex = reviewList.findIndex(item => item.examName === exam.name && item.questionNumber === question.number);
+  if (existingIndex !== -1) {
+    reviewList[existingIndex].level = Math.max(1, (reviewList[existingIndex].level || 1) + amount);
+    saveReviewList();
+    renderReviewList();
+    updateToggleReviewButtons();
+  }
+}
+
+function setReviewLevel(value) {
+  const val = parseInt(value);
+  if (isNaN(val) || val < 1) return;
+  if (!currentData || !currentData[currentExamIndex]) return;
+  const exam = currentData[currentExamIndex];
+  const question = exam.questions[currentQuestionIndex];
+  
+  const existingIndex = reviewList.findIndex(item => item.examName === exam.name && item.questionNumber === question.number);
+  if (existingIndex !== -1) {
+    reviewList[existingIndex].level = val;
+    saveReviewList();
+    renderReviewList();
+    updateToggleReviewButtons();
+  }
+}
+
+if (btnLevelDown) btnLevelDown.addEventListener("click", () => adjustReviewLevel(-1));
+if (btnLevelUp) btnLevelUp.addEventListener("click", () => adjustReviewLevel(1));
+if (currentLevelInput) currentLevelInput.addEventListener("change", (e) => setReviewLevel(e.target.value));
+
+if (fsBtnLevelDown) fsBtnLevelDown.addEventListener("click", () => adjustReviewLevel(-1));
+if (fsBtnLevelUp) fsBtnLevelUp.addEventListener("click", () => adjustReviewLevel(1));
+if (fsCurrentLevelInput) fsCurrentLevelInput.addEventListener("change", (e) => setReviewLevel(e.target.value));
 
 // Fullscreen image listeners
 questionImage.addEventListener("click", openFullscreen);
@@ -421,15 +476,16 @@ function showQuestion(questionIndex) {
 
   // Update question indicator
   if (isReviewMode) {
-    questionIndicator.textContent = `${currentReviewIndex + 1} / ${reviewList.length}`;
-    const isSingleReview = reviewList.length <= 1;
+    const filteredList = getFilteredReviewList();
+    questionIndicator.textContent = `${currentFilteredIndex + 1} / ${filteredList.length}`;
+    const isSingleReview = filteredList.length <= 1;
     prevQuestionBtn.disabled = isSingleReview;
     nextQuestionBtn.disabled = isSingleReview;
     
     if (fullscreenModal.classList.contains("active")) {
       fsPrevBtn.disabled = isSingleReview;
       fsNextBtn.disabled = isSingleReview;
-      fsQuestionIndicator.textContent = `${currentReviewIndex + 1} / ${reviewList.length}`;
+      fsQuestionIndicator.textContent = `${currentFilteredIndex + 1} / ${filteredList.length}`;
     }
   } else {
     questionIndicator.textContent = `${questionIndex + 1} / ${exam.questions.length}`;
@@ -678,29 +734,37 @@ function closeFullscreen() {
 
 function navigateQuestion(direction) {
   if (isReviewMode) {
-    if (reviewList.length === 0) {
+    const filteredList = getFilteredReviewList();
+    if (filteredList.length === 0) {
       isReviewMode = false;
       return;
     }
     
-    const inList = isCurrentQuestionInReviewList();
-    let newIndex = currentReviewIndex;
+    let inFilteredList = false;
+    if (currentData && currentData[currentExamIndex]) {
+      const exam = currentData[currentExamIndex];
+      const question = exam.questions[currentQuestionIndex];
+      inFilteredList = filteredList.some(item => item.examName === exam.name && item.questionNumber === question.number);
+    }
     
-    if (inList) {
-      newIndex += direction;
+    let newFilteredIndex = currentFilteredIndex;
+    if (inFilteredList) {
+      newFilteredIndex += direction;
     } else {
       if (direction < 0) {
-        newIndex -= 1;
+        newFilteredIndex -= 1;
       }
     }
     
-    if (newIndex < 0) {
-      newIndex = reviewList.length - 1;
-    } else if (newIndex >= reviewList.length) {
-      newIndex = 0;
+    if (newFilteredIndex < 0) {
+      newFilteredIndex = filteredList.length - 1;
+    } else if (newFilteredIndex >= filteredList.length) {
+      newFilteredIndex = 0;
     }
     
-    showReviewQuestion(newIndex);
+    const nextItem = filteredList[newFilteredIndex];
+    const originalIndex = reviewList.indexOf(nextItem);
+    showReviewQuestion(originalIndex, newFilteredIndex);
   } else {
     const exam = currentData[currentExamIndex];
     let newIndex = currentQuestionIndex + direction;
@@ -1134,7 +1198,8 @@ function toggleReviewQuestion() {
       examName: exam.name,
       questionNumber: question.number,
       examIndex: currentExamIndex,
-      questionIndex: currentQuestionIndex
+      questionIndex: currentQuestionIndex,
+      level: 1
     });
   }
   
@@ -1143,10 +1208,34 @@ function toggleReviewQuestion() {
   updateToggleReviewButtons();
 }
 
+function getFilteredReviewList() {
+  const filterVal = reviewLevelFilter ? reviewLevelFilter.value : "all";
+  if (filterVal === "all") return reviewList;
+  const lvl = parseInt(filterVal);
+  return reviewList.filter(item => (item.level || 1) === lvl);
+}
+
 function updateToggleReviewButtons() {
   const inList = isCurrentQuestionInReviewList();
   if (toggleReviewBtn) toggleReviewBtn.classList.toggle("active", inList);
   if (fsToggleReviewBtn) fsToggleReviewBtn.classList.toggle("active", inList);
+  
+  if (inList) {
+    const exam = currentData[currentExamIndex];
+    const question = exam.questions[currentQuestionIndex];
+    const existingIndex = reviewList.findIndex(item => item.examName === exam.name && item.questionNumber === question.number);
+    if (existingIndex !== -1) {
+      const level = reviewList[existingIndex].level || 1;
+      if (currentLevelInput) currentLevelInput.value = level;
+      if (fsCurrentLevelInput) fsCurrentLevelInput.value = level;
+    }
+    if (reviewLevelControl) reviewLevelControl.classList.remove("hidden");
+    if (fsReviewLevelControl) fsReviewLevelControl.classList.remove("hidden");
+  } else {
+    if (reviewLevelControl) reviewLevelControl.classList.add("hidden");
+    if (fsReviewLevelControl) fsReviewLevelControl.classList.add("hidden");
+  }
+  
   updateUnmemorizedStats();
 }
 
@@ -1164,12 +1253,36 @@ function updateUnmemorizedStats() {
   if (fsUnmemorizedTotalText) fsUnmemorizedTotalText.textContent = total;
 }
 
+function updateReviewFilterOptions() {
+  if (!reviewLevelFilter) return;
+  const currentVal = reviewLevelFilter.value;
+  
+  const levels = new Set(reviewList.map(item => item.level || 1));
+  const sortedLevels = Array.from(levels).sort((a,b) => a - b);
+  
+  let html = `<option value="all">Tất cả</option>`;
+  sortedLevels.forEach(lvl => {
+    html += `<option value="${lvl}">Cấp ${lvl}</option>`;
+  });
+  reviewLevelFilter.innerHTML = html;
+  
+  if (currentVal === "all" || levels.has(parseInt(currentVal))) {
+    reviewLevelFilter.value = currentVal;
+  } else {
+    reviewLevelFilter.value = "all";
+    currentFilteredIndex = -1;
+  }
+}
+
 function renderReviewList() {
   if (!reviewListEl) return;
   
-  reviewCount.textContent = reviewList.length;
+  updateReviewFilterOptions();
   
-  if (reviewList.length === 0) {
+  const filteredList = getFilteredReviewList();
+  if (reviewCount) reviewCount.textContent = filteredList.length;
+  
+  if (filteredList.length === 0) {
     reviewListEl.innerHTML = `
       <div class="empty-state">
         <svg class="empty-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor">
@@ -1182,13 +1295,18 @@ function renderReviewList() {
   }
   
   let html = "";
-  reviewList.forEach((item, index) => {
-    const isActive = isReviewMode && currentReviewIndex === index;
+  filteredList.forEach((item, filteredIndex) => {
+    const originalIndex = reviewList.indexOf(item);
+    const isActive = isReviewMode && currentFilteredIndex === filteredIndex;
+    const level = item.level || 1;
     html += `
-      <div class="exam-item ${isActive ? "active" : ""}" data-review-index="${index}">
+      <div class="exam-item ${isActive ? "active" : ""}" data-review-index="${originalIndex}" data-filtered-index="${filteredIndex}">
         <div class="exam-item-header">
           <input type="checkbox" class="exam-item-checkbox review-item-checkbox" title="Xóa khỏi danh sách">
-          <div class="exam-item-name" style="font-size: 0.85rem;">${item.examName} - Q${item.questionNumber}</div>
+          <div class="exam-item-name" style="font-size: 0.85rem; display: flex; align-items: center;">
+            <span style="background: var(--primary); color: white; padding: 0.1rem 0.3rem; border-radius: 4px; font-size: 0.7rem; margin-right: 0.35rem; white-space: nowrap;">Lv.${level}</span>
+            ${item.examName} - Q${item.questionNumber}
+          </div>
         </div>
       </div>
     `;
@@ -1199,16 +1317,17 @@ function renderReviewList() {
   reviewListEl.querySelectorAll(".exam-item").forEach(item => {
     item.addEventListener("click", (e) => {
       if (e.target.classList.contains("review-item-checkbox")) return;
-      const index = parseInt(item.dataset.reviewIndex);
-      showReviewQuestion(index);
+      const originalIndex = parseInt(item.dataset.reviewIndex);
+      const filteredIndex = parseInt(item.dataset.filteredIndex);
+      showReviewQuestion(originalIndex, filteredIndex);
     });
     
     const checkbox = item.querySelector(".review-item-checkbox");
     if (checkbox) {
       checkbox.addEventListener("click", (e) => e.stopPropagation());
       checkbox.addEventListener("change", (e) => {
-        const index = parseInt(item.dataset.reviewIndex);
-        reviewList.splice(index, 1);
+        const originalIndex = parseInt(item.dataset.reviewIndex);
+        reviewList.splice(originalIndex, 1);
         saveReviewList();
         renderReviewList();
         updateToggleReviewButtons();
@@ -1217,13 +1336,20 @@ function renderReviewList() {
   });
 }
 
-function showReviewQuestion(index) {
+function showReviewQuestion(index, filteredIndex = -1) {
   if (index < 0 || index >= reviewList.length) return;
   
   isReviewMode = true;
   currentReviewIndex = index;
   
   const item = reviewList[index];
+  
+  const filteredList = getFilteredReviewList();
+  if (filteredIndex !== -1) {
+    currentFilteredIndex = filteredIndex;
+  } else {
+    currentFilteredIndex = filteredList.indexOf(item);
+  }
   
   let eIdx = item.examIndex;
   let qIdx = item.questionIndex;

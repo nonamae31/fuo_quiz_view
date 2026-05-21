@@ -212,9 +212,32 @@ ipcMain.handle('save-comment', async (event, { zipPath, examFolder, questionNumb
     let targetEntryName = null;
     let existingEntry = null;
 
-    console.log(`[SAVE-COMMENT] Total entries in zip: ${zip.getEntries().length}`);
-
-    // Search for the existing comment file for this question
+    // First pass: find the image file to determine the authoritative comment file name
+    for (const entry of zip.getEntries()) {
+      if (entry.isDirectory) continue;
+      
+      const pathParts = entry.entryName.split('/');
+      if (pathParts.length < 2) continue;
+      
+      const entryExamFolder = pathParts[0];
+      const fileName = pathParts[pathParts.length - 1];
+      
+      // Match image file (not .txt)
+      if (entryExamFolder === examFolder && fileName.startsWith(`${questionNumber}_`) && !fileName.endsWith('.txt')) {
+        const dirPath = pathParts.slice(0, -1).join('/');
+        const baseName = fileName.replace(/\.[^/.]+$/, "");
+        targetEntryName = `${dirPath}/${baseName}_comments.txt`;
+        break;
+      }
+    }
+    
+    // Fallback if no image is found
+    if (!targetEntryName) {
+      targetEntryName = `${examFolder}/${questionNumber}_comments.txt`;
+    }
+    
+    // Second pass: find the authoritative entry, and delete any duplicate buggy entries
+    let entriesToDelete = [];
     for (const entry of zip.getEntries()) {
       if (entry.isDirectory) continue;
       
@@ -225,38 +248,20 @@ ipcMain.handle('save-comment', async (event, { zipPath, examFolder, questionNumb
       const fileName = pathParts[pathParts.length - 1];
       
       if (entryExamFolder === examFolder && fileName.startsWith(`${questionNumber}_`) && fileName.endsWith('_comments.txt')) {
-        targetEntryName = entry.entryName;
-        existingEntry = entry;
-        console.log(`[SAVE-COMMENT] Found existing comment entry: ${entry.entryName}`);
-        break;
-      }
-    }
-    
-    // If not found, search for the question's image to put the comment next to it
-    if (!targetEntryName) {
-      for (const entry of zip.getEntries()) {
-        if (entry.isDirectory) continue;
-        
-        const pathParts = entry.entryName.split('/');
-        if (pathParts.length < 2) continue;
-        
-        const entryExamFolder = pathParts[0];
-        const fileName = pathParts[pathParts.length - 1];
-        
-        if (entryExamFolder === examFolder && fileName.startsWith(`${questionNumber}_`) && !fileName.endsWith('.txt')) {
-          const dirPath = pathParts.slice(0, -1).join('/');
-          const baseName = fileName.replace(/\.[^/.]+$/, "");
-          targetEntryName = `${dirPath}/${baseName}_comments.txt`;
-          console.log(`[SAVE-COMMENT] Fallback to image baseName entry: ${targetEntryName}`);
-          break;
+        if (entry.entryName === targetEntryName) {
+           existingEntry = entry;
+           console.log(`[SAVE-COMMENT] Found authoritative comment entry: ${entry.entryName}`);
+        } else {
+           // This is a buggy duplicate (e.g., created by an older version), mark for deletion
+           entriesToDelete.push(entry.entryName);
         }
       }
     }
     
-    // Fallback
-    if (!targetEntryName) {
-      targetEntryName = `${examFolder}/${questionNumber}_comments.txt`;
-      console.log(`[SAVE-COMMENT] Complete fallback to: ${targetEntryName}`);
+    // Clean up duplicate buggy entries
+    for (const delEntry of entriesToDelete) {
+       console.log(`[SAVE-COMMENT] Deleting duplicate buggy entry: ${delEntry}`);
+       zip.deleteFile(delEntry);
     }
     
     let existingContent = '';
@@ -271,7 +276,6 @@ ipcMain.handle('save-comment', async (event, { zipPath, examFolder, questionNumb
       existingContent += commentText;
       
       console.log(`[SAVE-COMMENT] Updating existing entry length from ${existingEntry.getData().length} to ${Buffer.from(existingContent, 'utf8').length}`);
-      // Delete the old entry and add a new one to guarantee update in adm-zip
       zip.deleteFile(targetEntryName);
       zip.addFile(targetEntryName, Buffer.from(existingContent, 'utf8'));
     } else {
@@ -284,7 +288,6 @@ ipcMain.handle('save-comment', async (event, { zipPath, examFolder, questionNumb
     zip.writeZip(zipPath);
     console.log(`[SAVE-COMMENT] writeZip completed without error`);
     
-    // Double check if file was modified
     return { success: true };
   } catch (error) {
     console.log(`[SAVE-COMMENT] ERROR: ${error.message}\n${error.stack}`);
