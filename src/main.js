@@ -204,6 +204,93 @@ ipcMain.handle('save-attachment', async (e, { zipPath, entryPath }) => {
 });
 
 
+ipcMain.handle('save-comment', async (event, { zipPath, examFolder, questionNumber, commentText }) => {
+  try {
+    console.log(`[SAVE-COMMENT] called: zipPath=${zipPath}, examFolder=${examFolder}, questionNumber=${questionNumber}`);
+    const zip = new AdmZip(zipPath);
+    
+    let targetEntryName = null;
+    let existingEntry = null;
+
+    console.log(`[SAVE-COMMENT] Total entries in zip: ${zip.getEntries().length}`);
+
+    // Search for the existing comment file for this question
+    for (const entry of zip.getEntries()) {
+      if (entry.isDirectory) continue;
+      
+      const pathParts = entry.entryName.split('/');
+      if (pathParts.length < 2) continue;
+      
+      const entryExamFolder = pathParts[0];
+      const fileName = pathParts[pathParts.length - 1];
+      
+      if (entryExamFolder === examFolder && fileName.startsWith(`${questionNumber}_`) && fileName.endsWith('_comments.txt')) {
+        targetEntryName = entry.entryName;
+        existingEntry = entry;
+        console.log(`[SAVE-COMMENT] Found existing comment entry: ${entry.entryName}`);
+        break;
+      }
+    }
+    
+    // If not found, search for the question's image to put the comment next to it
+    if (!targetEntryName) {
+      for (const entry of zip.getEntries()) {
+        if (entry.isDirectory) continue;
+        
+        const pathParts = entry.entryName.split('/');
+        if (pathParts.length < 2) continue;
+        
+        const entryExamFolder = pathParts[0];
+        const fileName = pathParts[pathParts.length - 1];
+        
+        if (entryExamFolder === examFolder && fileName.startsWith(`${questionNumber}_`) && !fileName.endsWith('.txt')) {
+          const dirPath = pathParts.slice(0, -1).join('/');
+          const baseName = fileName.replace(/\.[^/.]+$/, "");
+          targetEntryName = `${dirPath}/${baseName}_comments.txt`;
+          console.log(`[SAVE-COMMENT] Fallback to image baseName entry: ${targetEntryName}`);
+          break;
+        }
+      }
+    }
+    
+    // Fallback
+    if (!targetEntryName) {
+      targetEntryName = `${examFolder}/${questionNumber}_comments.txt`;
+      console.log(`[SAVE-COMMENT] Complete fallback to: ${targetEntryName}`);
+    }
+    
+    let existingContent = '';
+    
+    if (existingEntry) {
+      existingContent = existingEntry.getData().toString('utf8');
+      
+      // Append the comment to the existing content
+      if (!existingContent.endsWith('\n')) {
+        existingContent += '\n';
+      }
+      existingContent += commentText;
+      
+      console.log(`[SAVE-COMMENT] Updating existing entry length from ${existingEntry.getData().length} to ${Buffer.from(existingContent, 'utf8').length}`);
+      // Delete the old entry and add a new one to guarantee update in adm-zip
+      zip.deleteFile(targetEntryName);
+      zip.addFile(targetEntryName, Buffer.from(existingContent, 'utf8'));
+    } else {
+      existingContent = `Media ID: 0\nSource: local\nExtracted At: ${new Date().toLocaleString()}\nTotal Comments: 1\n====\n${commentText}`;
+      console.log(`[SAVE-COMMENT] Creating new entry: ${targetEntryName}`);
+      zip.addFile(targetEntryName, Buffer.from(existingContent, 'utf8'));
+    }
+    
+    console.log(`[SAVE-COMMENT] Calling zip.writeZip(${zipPath})`);
+    zip.writeZip(zipPath);
+    console.log(`[SAVE-COMMENT] writeZip completed without error`);
+    
+    // Double check if file was modified
+    return { success: true };
+  } catch (error) {
+    console.log(`[SAVE-COMMENT] ERROR: ${error.message}\n${error.stack}`);
+    return { success: false, error: error.message };
+  }
+});
 
 // --- Google Drive Integration ---
 const https = require('https');

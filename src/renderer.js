@@ -14,6 +14,11 @@ let currentTranslateX = 0;
 let currentTranslateY = 0;
 let startDragX = 0;
 let startDragY = 0;
+let isZoomLocked = false;
+let isPositionPinned = false;
+let reviewList = [];
+let isReviewMode = false;
+let currentReviewIndex = -1;
 
 // DOM elements
 const openZipBtn = document.getElementById("openZipBtn");
@@ -41,6 +46,18 @@ const fsNextBtn = document.getElementById("fsNextBtn");
 const fsToggleComments = document.getElementById("fsToggleComments");
 const fsCommentSidebar = document.getElementById("fsCommentSidebar");
 const fsCommentContent = document.getElementById("fsCommentContent");
+const fsLockZoomBtn = document.getElementById("fsLockZoomBtn");
+const fsPinPositionBtn = document.getElementById("fsPinPositionBtn");
+const fsToggleReviewBtn = document.getElementById("fsToggleReviewBtn");
+
+const reviewListEl = document.getElementById("reviewList");
+const reviewCount = document.getElementById("reviewCount");
+const toggleReviewBtn = document.getElementById("toggleReviewBtn");
+
+const unmemorizedCountText = document.getElementById("unmemorizedCountText");
+const unmemorizedTotalText = document.getElementById("unmemorizedTotalText");
+const fsUnmemorizedCountText = document.getElementById("fsUnmemorizedCountText");
+const fsUnmemorizedTotalText = document.getElementById("fsUnmemorizedTotalText");
 
 
 // Event listeners
@@ -64,6 +81,11 @@ dropZone.addEventListener("drop", handleDrop);
 
 prevQuestionBtn.addEventListener("click", () => navigateQuestion(-1));
 nextQuestionBtn.addEventListener("click", () => navigateQuestion(1));
+if (toggleReviewBtn) toggleReviewBtn.addEventListener("click", toggleReviewQuestion);
+if (fsToggleReviewBtn) fsToggleReviewBtn.addEventListener("click", (e) => {
+  e.stopPropagation();
+  toggleReviewQuestion();
+});
 
 // Fullscreen image listeners
 questionImage.addEventListener("click", openFullscreen);
@@ -90,6 +112,22 @@ fsToggleComments.addEventListener("click", (e) => {
   e.stopPropagation();
   fsCommentSidebar.classList.toggle("visible");
 });
+
+if (fsLockZoomBtn) {
+  fsLockZoomBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    isZoomLocked = !isZoomLocked;
+    fsLockZoomBtn.classList.toggle("active", isZoomLocked);
+  });
+}
+
+if (fsPinPositionBtn) {
+  fsPinPositionBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    isPositionPinned = !isPositionPinned;
+    fsPinPositionBtn.classList.toggle("active", isPositionPinned);
+  });
+}
 
 
 
@@ -140,6 +178,68 @@ async function handleSelectZip() {
   }
 }
 
+// Comment submission
+document.querySelectorAll(".comment-submit-btn").forEach(btn => {
+  btn.addEventListener("click", async (e) => {
+    if (!currentData || !currentZipPath) return;
+    
+    // Find the associated textarea in the same container
+    const container = e.target.closest(".comment-input-area");
+    const textarea = container.querySelector(".comment-input-textarea");
+    const text = textarea.value.trim();
+    
+    if (!text) return;
+    
+    // Disable button while saving
+    e.target.disabled = true;
+    e.target.textContent = "Saving...";
+    
+    const exam = currentData[currentExamIndex];
+    const question = exam.questions[currentQuestionIndex];
+    
+    // Format the new comment block
+    const now = new Date();
+    // Use a large number or generate an ID to avoid conflicts, or just use timestamp
+    const timestamp = now.getTime();
+    
+    // The format that parseStructuredComment expects
+    const newCommentStr = `#9999 | User: admin | Date: ${now.toLocaleString()}\nID: admin_${timestamp}\nContent:\n${text}\n---`;
+    
+    try {
+      const res = await window.electronAPI.saveComment({
+        zipPath: currentZipPath,
+        examFolder: exam.name,
+        questionNumber: question.number,
+        commentText: newCommentStr
+      });
+      
+      if (res.success) {
+        // Update in-memory state
+        if (question.comment && question.comment.trim()) {
+           question.comment += `\n${newCommentStr}`;
+        } else {
+           question.comment = `Media ID: 0\nSource: local\nExtracted At: ${now.toLocaleString()}\nTotal Comments: 1\n====\n${newCommentStr}`;
+        }
+        
+        // Re-render the comments
+        const commentHtml = parseComment(question.comment);
+        commentContent.innerHTML = commentHtml;
+        fsCommentContent.innerHTML = commentHtml;
+        
+        // Clear inputs
+        document.querySelectorAll(".comment-input-textarea").forEach(ta => ta.value = "");
+      } else {
+        alert("Failed to save comment: " + res.error);
+      }
+    } catch (err) {
+      alert("Error saving comment: " + err.message);
+    } finally {
+      e.target.disabled = false;
+      e.target.textContent = "Send";
+    }
+  });
+});
+
 async function handleDrop(e) {
   e.preventDefault();
   e.stopPropagation();
@@ -178,13 +278,14 @@ async function loadZip(zipPath) {
 
     // Load completed exams from localStorage
     loadCompletedExams();
-
+    loadReviewList();
 
     // Hide welcome screen and show viewer immediately
     welcomeScreen.classList.add("hidden");
     viewerContent.classList.remove("hidden");
 
     renderExamList();
+    renderReviewList();
     showExam(0);
   } catch (error) {
     alert(`Error: ${error.message}`);
@@ -299,6 +400,11 @@ function showExam(examIndex) {
       item.classList.remove("active");
     }
   });
+  
+  isReviewMode = false;
+  currentReviewIndex = -1;
+  renderReviewList(); // clear active state in review list
+  
   // Show first question
   showQuestion(0);
 }
@@ -314,18 +420,28 @@ function showQuestion(questionIndex) {
   const question = exam.questions[questionIndex];
 
   // Update question indicator
-  questionIndicator.textContent = `${questionIndex + 1} / ${exam.questions.length}`;
+  if (isReviewMode) {
+    questionIndicator.textContent = `${currentReviewIndex + 1} / ${reviewList.length}`;
+    const isSingleReview = reviewList.length <= 1;
+    prevQuestionBtn.disabled = isSingleReview;
+    nextQuestionBtn.disabled = isSingleReview;
+    
+    if (fullscreenModal.classList.contains("active")) {
+      fsPrevBtn.disabled = isSingleReview;
+      fsNextBtn.disabled = isSingleReview;
+      fsQuestionIndicator.textContent = `${currentReviewIndex + 1} / ${reviewList.length}`;
+    }
+  } else {
+    questionIndicator.textContent = `${questionIndex + 1} / ${exam.questions.length}`;
+    const isSingleQuestion = exam.questions.length <= 1;
+    prevQuestionBtn.disabled = isSingleQuestion;
+    nextQuestionBtn.disabled = isSingleQuestion;
 
-  // Update navigation buttons - Looping enabled, so only disable if 1 question
-  const isSingleQuestion = exam.questions.length <= 1;
-  prevQuestionBtn.disabled = isSingleQuestion;
-  nextQuestionBtn.disabled = isSingleQuestion;
-
-  // Update Fullscreen buttons and indicator
-  if (fullscreenModal.classList.contains("active")) {
-    fsPrevBtn.disabled = isSingleQuestion;
-    fsNextBtn.disabled = isSingleQuestion;
-    fsQuestionIndicator.textContent = `${questionIndex + 1} / ${exam.questions.length}`;
+    if (fullscreenModal.classList.contains("active")) {
+      fsPrevBtn.disabled = isSingleQuestion;
+      fsNextBtn.disabled = isSingleQuestion;
+      fsQuestionIndicator.textContent = `${questionIndex + 1} / ${exam.questions.length}`;
+    }
   }
 
   // Update question image
@@ -351,7 +467,14 @@ function showQuestion(questionIndex) {
 
   // Reset zoom when showing new question if in fullscreen (or preemptively)
   if (fullscreenModal.classList.contains("active")) {
-    resetZoom();
+    if (!isZoomLocked) zoomLevel = 1;
+    if (!isPositionPinned) {
+      currentTranslateX = 0;
+      currentTranslateY = 0;
+    }
+    isDragging = false;
+    updateImageTransform();
+    fullscreenImage.style.cursor = "grab";
   }
 
   // Update comment with formatted display
@@ -368,6 +491,8 @@ function showQuestion(questionIndex) {
   if (fullscreenModal.classList.contains("active")) {
     fsCommentContent.innerHTML = commentHtml;
   }
+
+  updateToggleReviewButtons();
 }
 
 
@@ -429,6 +554,7 @@ function parseStructuredComment(text) {
 
   // Parse individual comments
   let currentComment = null;
+  const commentsList = [];
 
   while (i < lines.length) {
     const line = lines[i].trim();
@@ -436,7 +562,7 @@ function parseStructuredComment(text) {
     if (line.startsWith("#") && line.includes("|")) {
       // Save previous comment if exists
       if (currentComment) {
-        html += formatCommentItem(currentComment);
+        commentsList.push(currentComment);
       }
 
       // Start new comment
@@ -473,15 +599,32 @@ function parseStructuredComment(text) {
 
   // Add last comment
   if (currentComment) {
-    html += formatCommentItem(currentComment);
+    commentsList.push(currentComment);
+  }
+  
+  // Sort comments so that 'admin' is at the top
+  commentsList.sort((a, b) => {
+    const isAAdmin = a.user.toLowerCase() === 'admin';
+    const isBAdmin = b.user.toLowerCase() === 'admin';
+    if (isAAdmin && !isBAdmin) return -1;
+    if (!isAAdmin && isBAdmin) return 1;
+    // Otherwise keep original order by assuming lower numbers came first (or keep stable)
+    return 0; 
+  });
+  
+  for (const comment of commentsList) {
+    html += formatCommentItem(comment);
   }
 
   return html;
 }
 
 function formatCommentItem(comment) {
+  const isAdmin = comment.user.toLowerCase() === 'admin';
+  const adminClass = isAdmin ? ' admin-comment' : '';
+  
   return `
-    <div class="comment-item">
+    <div class="comment-item${adminClass}">
       <div class="comment-item-header">
         <div style="display: flex; align-items: center; gap: 0.75rem;">
           <span class="comment-item-number">#${escapeHtml(comment.number)}</span>
@@ -500,18 +643,32 @@ function openFullscreen() {
     fsCommentContent.innerHTML = commentContent.innerHTML;
     fullscreenModal.classList.add("active");
 
-    // Ensure sidebar is hidden by default
-    fsCommentSidebar.classList.remove("visible");
+    // Ensure sidebar is visible by default
+    fsCommentSidebar.classList.add("visible");
 
     // Reset zoom state on open
-    resetZoom();
+    if (!isZoomLocked) zoomLevel = 1;
+    if (!isPositionPinned) {
+      currentTranslateX = 0;
+      currentTranslateY = 0;
+    }
+    isDragging = false;
+    updateImageTransform();
+    fullscreenImage.style.cursor = "grab";
 
     // Update button states and indicator
-    const exam = currentData[currentExamIndex];
-    const isSingleQuestion = exam.questions.length <= 1;
-    fsPrevBtn.disabled = isSingleQuestion;
-    fsNextBtn.disabled = isSingleQuestion;
-    fsQuestionIndicator.textContent = `${currentQuestionIndex + 1} / ${exam.questions.length}`;
+    if (isReviewMode) {
+      const isSingleReview = reviewList.length <= 1;
+      fsPrevBtn.disabled = isSingleReview;
+      fsNextBtn.disabled = isSingleReview;
+      fsQuestionIndicator.textContent = `${currentReviewIndex + 1} / ${reviewList.length}`;
+    } else {
+      const exam = currentData[currentExamIndex];
+      const isSingleQuestion = exam.questions.length <= 1;
+      fsPrevBtn.disabled = isSingleQuestion;
+      fsNextBtn.disabled = isSingleQuestion;
+      fsQuestionIndicator.textContent = `${currentQuestionIndex + 1} / ${exam.questions.length}`;
+    }
   }
 }
 
@@ -520,17 +677,43 @@ function closeFullscreen() {
 }
 
 function navigateQuestion(direction) {
-  const exam = currentData[currentExamIndex];
-  let newIndex = currentQuestionIndex + direction;
+  if (isReviewMode) {
+    if (reviewList.length === 0) {
+      isReviewMode = false;
+      return;
+    }
+    
+    const inList = isCurrentQuestionInReviewList();
+    let newIndex = currentReviewIndex;
+    
+    if (inList) {
+      newIndex += direction;
+    } else {
+      if (direction < 0) {
+        newIndex -= 1;
+      }
+    }
+    
+    if (newIndex < 0) {
+      newIndex = reviewList.length - 1;
+    } else if (newIndex >= reviewList.length) {
+      newIndex = 0;
+    }
+    
+    showReviewQuestion(newIndex);
+  } else {
+    const exam = currentData[currentExamIndex];
+    let newIndex = currentQuestionIndex + direction;
 
-  // Handle looping
-  if (newIndex < 0) {
-    newIndex = exam.questions.length - 1;
-  } else if (newIndex >= exam.questions.length) {
-    newIndex = 0;
+    // Handle looping
+    if (newIndex < 0) {
+      newIndex = exam.questions.length - 1;
+    } else if (newIndex >= exam.questions.length) {
+      newIndex = 0;
+    }
+
+    showQuestion(newIndex);
   }
-
-  showQuestion(newIndex);
 }
 
 function escapeHtml(text) {
@@ -897,6 +1080,194 @@ function saveCompletedExams() {
 }
 
 // completedExams sẽ được load khi đã có ZIP (trong loadZip)
+
+// --- Review List Logic ---
+function getReviewListKey() {
+  if (!currentZipPath) return null;
+  const normalizedZipPath = currentZipPath.replace(/\\/g, "/");
+  return `reviewList::zip::${hashString(normalizedZipPath)}`;
+}
+
+function loadReviewList() {
+  try {
+    const key = getReviewListKey();
+    reviewList = [];
+    if (!key) return;
+    const saved = localStorage.getItem(key);
+    if (saved) {
+      reviewList = JSON.parse(saved);
+    }
+  } catch (error) {
+    console.error("Failed to load review list:", error);
+    reviewList = [];
+  }
+}
+
+function saveReviewList() {
+  try {
+    const key = getReviewListKey();
+    if (!key) return;
+    localStorage.setItem(key, JSON.stringify(reviewList));
+  } catch (error) {
+    console.error("Failed to save review list:", error);
+  }
+}
+
+function isCurrentQuestionInReviewList() {
+  if (!currentData || !currentData[currentExamIndex]) return false;
+  const exam = currentData[currentExamIndex];
+  const question = exam.questions[currentQuestionIndex];
+  return reviewList.some(item => item.examName === exam.name && item.questionNumber === question.number);
+}
+
+function toggleReviewQuestion() {
+  if (!currentData || !currentData[currentExamIndex]) return;
+  const exam = currentData[currentExamIndex];
+  const question = exam.questions[currentQuestionIndex];
+  
+  const existingIndex = reviewList.findIndex(item => item.examName === exam.name && item.questionNumber === question.number);
+  
+  if (existingIndex !== -1) {
+    reviewList.splice(existingIndex, 1);
+  } else {
+    reviewList.push({
+      examName: exam.name,
+      questionNumber: question.number,
+      examIndex: currentExamIndex,
+      questionIndex: currentQuestionIndex
+    });
+  }
+  
+  saveReviewList();
+  renderReviewList();
+  updateToggleReviewButtons();
+}
+
+function updateToggleReviewButtons() {
+  const inList = isCurrentQuestionInReviewList();
+  if (toggleReviewBtn) toggleReviewBtn.classList.toggle("active", inList);
+  if (fsToggleReviewBtn) fsToggleReviewBtn.classList.toggle("active", inList);
+  updateUnmemorizedStats();
+}
+
+function updateUnmemorizedStats() {
+  if (!currentData || !currentData[currentExamIndex]) return;
+  const exam = currentData[currentExamIndex];
+  
+  const count = reviewList.filter(item => item.examName === exam.name).length;
+  const total = exam.questions.length;
+  
+  if (unmemorizedCountText) unmemorizedCountText.textContent = count;
+  if (unmemorizedTotalText) unmemorizedTotalText.textContent = total;
+  
+  if (fsUnmemorizedCountText) fsUnmemorizedCountText.textContent = count;
+  if (fsUnmemorizedTotalText) fsUnmemorizedTotalText.textContent = total;
+}
+
+function renderReviewList() {
+  if (!reviewListEl) return;
+  
+  reviewCount.textContent = reviewList.length;
+  
+  if (reviewList.length === 0) {
+    reviewListEl.innerHTML = `
+      <div class="empty-state">
+        <svg class="empty-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
+        </svg>
+        <p>Trống</p>
+      </div>
+    `;
+    return;
+  }
+  
+  let html = "";
+  reviewList.forEach((item, index) => {
+    const isActive = isReviewMode && currentReviewIndex === index;
+    html += `
+      <div class="exam-item ${isActive ? "active" : ""}" data-review-index="${index}">
+        <div class="exam-item-header">
+          <input type="checkbox" class="exam-item-checkbox review-item-checkbox" title="Xóa khỏi danh sách">
+          <div class="exam-item-name" style="font-size: 0.85rem;">${item.examName} - Q${item.questionNumber}</div>
+        </div>
+      </div>
+    `;
+  });
+  
+  reviewListEl.innerHTML = html;
+  
+  reviewListEl.querySelectorAll(".exam-item").forEach(item => {
+    item.addEventListener("click", (e) => {
+      if (e.target.classList.contains("review-item-checkbox")) return;
+      const index = parseInt(item.dataset.reviewIndex);
+      showReviewQuestion(index);
+    });
+    
+    const checkbox = item.querySelector(".review-item-checkbox");
+    if (checkbox) {
+      checkbox.addEventListener("click", (e) => e.stopPropagation());
+      checkbox.addEventListener("change", (e) => {
+        const index = parseInt(item.dataset.reviewIndex);
+        reviewList.splice(index, 1);
+        saveReviewList();
+        renderReviewList();
+        updateToggleReviewButtons();
+      });
+    }
+  });
+}
+
+function showReviewQuestion(index) {
+  if (index < 0 || index >= reviewList.length) return;
+  
+  isReviewMode = true;
+  currentReviewIndex = index;
+  
+  const item = reviewList[index];
+  
+  let eIdx = item.examIndex;
+  let qIdx = item.questionIndex;
+  
+  if (!currentData[eIdx] || currentData[eIdx].name !== item.examName) {
+    eIdx = currentData.findIndex(e => e.name === item.examName);
+  }
+  if (eIdx !== -1) {
+    const exam = currentData[eIdx];
+    if (!exam.questions[qIdx] || exam.questions[qIdx].number !== item.questionNumber) {
+      qIdx = exam.questions.findIndex(q => q.number === item.questionNumber);
+    }
+  }
+  
+  if (eIdx !== -1 && qIdx !== -1) {
+    currentExamIndex = eIdx;
+    
+    const exam = currentData[eIdx];
+    currentExamName.textContent = exam.name + " (Ôn tập)";
+    questionCount.textContent = `${exam.questions.length} question${exam.questions.length !== 1 ? "s" : ""}`;
+    
+    examAttachments.innerHTML = "";
+    if (exam.attachments && exam.attachments.length > 0) {
+      exam.attachments.forEach((att) => {
+        const el = document.createElement("div");
+        el.className = "attachment-item";
+        el.title = `Download ${att.name} (${formatBytes(att.size)})`;
+        el.innerHTML = `
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13" />
+          </svg>
+          <span>${att.name}</span>
+        `;
+        el.addEventListener("click", () => saveExamAttachment(att.path));
+        examAttachments.appendChild(el);
+      });
+    }
+    
+    document.querySelectorAll("#examList .exam-item").forEach(el => el.classList.remove("active"));
+    renderReviewList(); 
+    
+    showQuestion(qIdx);
+  }
+}
 
 // Display App Version
 (async () => {
