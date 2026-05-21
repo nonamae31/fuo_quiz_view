@@ -934,77 +934,7 @@ if (themeToggle) {
   });
 }
 
-// Auto Updater UI Handler
-const updateNotification = document.getElementById("updateNotification");
 
-// Listen for update messages (errors, status)
-window.electronAPI.onUpdateMessage((text) => {
-  if (text.startsWith("Error")) {
-    // Show error in notification if possible, or alert
-    if (updateNotification) {
-      updateNotification.classList.remove("hidden");
-      const span = updateNotification.querySelector("span");
-      if (span) span.textContent = "Update Error!";
-      if (restartBtn) {
-        restartBtn.textContent = "Error";
-        restartBtn.title = text;
-      }
-    }
-  }
-});
-
-const restartBtn = document.getElementById("restartBtn");
-let updateDownloaded = false;
-
-if (restartBtn) {
-  restartBtn.addEventListener("click", () => {
-    if (updateDownloaded) {
-      window.electronAPI.restartApp();
-    }
-  });
-}
-
-// Listen for updates
-window.electronAPI.onUpdateAvailable(() => {
-  if (updateNotification) {
-    updateNotification.classList.remove("hidden");
-    // Update text to show downloading
-    const span = updateNotification.querySelector("span");
-    if (span) span.textContent = "Downloading update...";
-    if (restartBtn) {
-      restartBtn.disabled = true;
-      restartBtn.textContent = "Downloading...";
-    }
-  }
-});
-
-window.electronAPI.onUpdateDownloadProgress((progressObj) => {
-  if (updateNotification) {
-    const span = updateNotification.querySelector("span");
-    const percent = Math.round(progressObj.percent);
-    if (span) span.textContent = `Downloading update... ${percent}%`;
-    if (restartBtn) {
-      restartBtn.textContent = `Downloading ${percent}%`;
-    }
-  }
-});
-
-window.electronAPI.onUpdateDownloaded(() => {
-  updateDownloaded = true;
-  if (updateNotification) {
-    updateNotification.classList.remove("hidden");
-    // Update text to show ready
-    const span = updateNotification.querySelector("span");
-    if (span) span.textContent = "New version ready!";
-    if (restartBtn) {
-      restartBtn.disabled = false;
-      restartBtn.textContent = "Restart to Update";
-    }
-  }
-});
-
-// Check for updates on load
-window.electronAPI.checkForUpdate();
 
 // --- Exam Parsing and Grouping ---
 
