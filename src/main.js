@@ -203,63 +203,7 @@ ipcMain.handle('save-attachment', async (e, { zipPath, entryPath }) => {
   }
 });
 
-// --- Starred questions (persist in userData) ---
-function getStarredQuestionsPath() {
-  return path.join(app.getPath('userData'), 'starred-questions.json');
-}
 
-function readStarredQuestions() {
-  const filePath = getStarredQuestionsPath();
-  try {
-    if (!fs.existsSync(filePath)) return [];
-    const raw = fs.readFileSync(filePath, 'utf8');
-    const data = JSON.parse(raw);
-    return Array.isArray(data) ? data : [];
-  } catch (_) {
-    return [];
-  }
-}
-
-function writeStarredQuestions(entries) {
-  const filePath = getStarredQuestionsPath();
-  fs.writeFileSync(filePath, JSON.stringify(entries), 'utf8');
-}
-
-ipcMain.handle('starred-list', async () => {
-  return readStarredQuestions();
-});
-
-ipcMain.handle('starred-add', async (event, entry) => {
-  try {
-    if (!entry || !entry.id) {
-      return { success: false, error: 'Invalid entry' };
-    }
-    const list = readStarredQuestions();
-    const idx = list.findIndex((e) => e.id === entry.id);
-    if (idx >= 0) {
-      list[idx] = { ...list[idx], ...entry, starredAt: entry.starredAt || list[idx].starredAt };
-    } else {
-      list.push(entry);
-    }
-    writeStarredQuestions(list);
-    return { success: true };
-  } catch (error) {
-    return { success: false, error: error.message };
-  }
-});
-
-ipcMain.handle('starred-remove', async (event, id) => {
-  try {
-    if (!id) {
-      return { success: false, error: 'Missing id' };
-    }
-    const list = readStarredQuestions().filter((e) => e.id !== id);
-    writeStarredQuestions(list);
-    return { success: true };
-  } catch (error) {
-    return { success: false, error: error.message };
-  }
-});
 
 // --- Google Drive Integration ---
 const https = require('https');

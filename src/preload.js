@@ -5,9 +5,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   loadZipFile: (zipPath) => ipcRenderer.invoke('load-zip-file', zipPath),
   saveAttachment: (zipPath, entryPath) => ipcRenderer.invoke('save-attachment', { zipPath, entryPath }),
 
-  starredList: () => ipcRenderer.invoke('starred-list'),
-  starredAdd: (entry) => ipcRenderer.invoke('starred-add', entry),
-  starredRemove: (id) => ipcRenderer.invoke('starred-remove', id),
 
   // Drive API
   driveListFiles: (folderId) => ipcRenderer.invoke('drive-list-files', folderId),
