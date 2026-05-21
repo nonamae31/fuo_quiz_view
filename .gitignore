@@ -134,3 +134,8 @@ dist
 .yarn/build-state.yml
 .yarn/install-state.gz
 .pnp.*
+dist/
+*.log
+.DS_Store
+Thumbs.db
+*.zip
